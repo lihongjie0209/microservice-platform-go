@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lihongjie0209/platform-go/eventbus"
+	"github.com/lihongjie0209/microservice-platform-go/eventbus"
 	commonv1 "github.com/lihongjie0209/platform-protos/gen/go/platform/common/v1"
 	identityv1 "github.com/lihongjie0209/platform-protos/gen/go/platform/identity/v1"
 	"github.com/testcontainers/testcontainers-go"
