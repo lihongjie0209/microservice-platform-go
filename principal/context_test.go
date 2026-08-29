@@ -8,7 +8,7 @@ import (
 )
 
 func TestContext(t *testing.T) {
-	if _, ok := principal.FromContext(nil); ok {
+	if _, ok := principal.FromContext(nil); ok { //nolint:staticcheck // Nil safety is the behavior under test.
 		t.Fatal("FromContext(nil) found principal")
 	}
 	if _, err := principal.Require(t.Context()); !errors.Is(err, principal.ErrMissing) {
