@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	commonv1 "github.com/lihongjie0209/platform-protos/gen/go/platform/common/v1"
 	identityv1 "github.com/lihongjie0209/platform-protos/gen/go/platform/identity/v1"
 )
 
