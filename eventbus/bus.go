@@ -60,6 +60,9 @@ func New(ctx context.Context, config Config) (*Bus, error) {
 }
 
 func (b *Bus) Publish(ctx context.Context, subject string, envelope *commonv1.EventEnvelope) error {
+	if b == nil {
+		return errors.New("event bus is disabled")
+	}
 	if envelope == nil || envelope.EventId == "" {
 		return errors.New("event envelope with event_id is required")
 	}
@@ -82,6 +85,9 @@ func (b *Bus) Publish(ctx context.Context, subject string, envelope *commonv1.Ev
 }
 
 func (b *Bus) Consume(ctx context.Context, durable, filterSubject string, handler Handler) error {
+	if b == nil {
+		return errors.New("event bus is disabled")
+	}
 	if durable == "" || filterSubject == "" || handler == nil {
 		return errors.New("durable name, filter subject, and handler are required")
 	}
@@ -115,6 +121,9 @@ func (b *Bus) Consume(ctx context.Context, durable, filterSubject string, handle
 }
 
 func (b *Bus) Close() error {
+	if b == nil {
+		return nil
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {

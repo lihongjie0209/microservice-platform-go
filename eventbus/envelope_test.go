@@ -1,11 +1,26 @@
 package eventbus
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	identityv1 "github.com/lihongjie0209/platform-protos/gen/go/platform/identity/v1"
 )
+
+func TestDisabledBusIsNilSafe(t *testing.T) {
+	t.Parallel()
+	var bus *Bus
+	if err := bus.Publish(context.Background(), "platform.test.v1", &commonv1.EventEnvelope{EventId: "event-1"}); err == nil {
+		t.Fatal("Publish() error = nil")
+	}
+	if err := bus.Consume(context.Background(), "consumer", "platform.test.v1", func(context.Context, *commonv1.EventEnvelope) error { return nil }); err == nil {
+		t.Fatal("Consume() error = nil")
+	}
+	if err := bus.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
 
 func TestEnvelopeRoundTrip(t *testing.T) {
 	t.Parallel()
