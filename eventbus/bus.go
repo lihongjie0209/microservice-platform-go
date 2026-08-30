@@ -10,12 +10,14 @@ import (
 	commonv1 "github.com/lihongjie0209/platform-protos/gen/go/platform/common/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	HeaderRequestID = "X-Request-ID"
-	HeaderTraceID   = "Traceparent"
+	HeaderRequestID   = "X-Request-ID"
+	HeaderTraceID     = "X-Trace-ID"
+	HeaderTraceParent = "traceparent"
 )
 
 type Handler func(context.Context, *commonv1.EventEnvelope) error
@@ -31,6 +33,9 @@ type Bus struct {
 
 func New(ctx context.Context, config Config) (*Bus, error) {
 	config.defaults()
+	if err := config.validate(); err != nil {
+		return nil, fmt.Errorf("validate event bus config: %w", err)
+	}
 	connection, err := nats.Connect(strings.Join(config.URLs, ","),
 		nats.Name(config.ClientName), nats.Timeout(config.ConnectTimeout),
 		nats.MaxReconnects(-1), nats.ReconnectWait(config.ReconnectWait),
@@ -78,46 +83,11 @@ func (b *Bus) Publish(ctx context.Context, subject string, envelope *commonv1.Ev
 		message.Header.Set(HeaderRequestID, envelope.Context.RequestId)
 		message.Header.Set(HeaderTraceID, envelope.Context.TraceId)
 	}
+	propagation.TraceContext{}.Inject(ctx, natsHeaderCarrier(message.Header))
 	if _, err := b.js.PublishMsg(publishCtx, message, jetstream.WithMsgID(envelope.EventId)); err != nil {
 		return fmt.Errorf("publish event %q: %w", envelope.EventId, err)
 	}
 	return nil
-}
-
-func (b *Bus) Consume(ctx context.Context, durable, filterSubject string, handler Handler) error {
-	if b == nil {
-		return errors.New("event bus is disabled")
-	}
-	if durable == "" || filterSubject == "" || handler == nil {
-		return errors.New("durable name, filter subject, and handler are required")
-	}
-	consumer, err := b.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable: durable, FilterSubject: filterSubject,
-		AckPolicy: jetstream.AckExplicitPolicy, AckWait: b.config.ConsumerAckWait,
-		MaxDeliver: b.config.ConsumerMaxDeliver,
-	})
-	if err != nil {
-		return fmt.Errorf("provision consumer %q: %w", durable, err)
-	}
-	consumeContext, err := consumer.Consume(func(message jetstream.Msg) {
-		envelope := new(commonv1.EventEnvelope)
-		if err := proto.Unmarshal(message.Data(), envelope); err != nil {
-			_ = message.Term()
-			return
-		}
-		messageContext := ctx
-		if err := handler(messageContext, envelope); err != nil {
-			_ = message.Nak()
-			return
-		}
-		_ = message.Ack()
-	})
-	if err != nil {
-		return fmt.Errorf("start consumer %q: %w", durable, err)
-	}
-	defer consumeContext.Stop()
-	<-ctx.Done()
-	return ctx.Err()
 }
 
 func (b *Bus) Close() error {
