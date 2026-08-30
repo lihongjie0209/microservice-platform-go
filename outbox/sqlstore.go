@@ -28,6 +28,27 @@ func NewSQLStore(db *sqlx.DB, table string) (*SQLStore, error) {
 	return &SQLStore{db: db, table: table, now: time.Now}, nil
 }
 
+// AddTx persists an event inside the caller's business transaction. The event
+// is not visible to a dispatcher until that transaction commits.
+func (s *SQLStore) AddTx(ctx context.Context, tx *sqlx.Tx, event Event, actor string) error {
+	if tx == nil || event.ID == "" || event.Subject == "" || event.Envelope == nil || actor == "" {
+		return errors.New("transaction, complete event, and audit actor are required")
+	}
+	if event.Envelope.GetEventId() != event.ID || event.Envelope.GetEventType() != event.Subject {
+		return errors.New("outbox event id and subject must match its envelope")
+	}
+	encoded, err := proto.Marshal(event.Envelope)
+	if err != nil {
+		return fmt.Errorf("encode %s event %q: %w", s.table, event.ID, err)
+	}
+	now := s.now()
+	query := s.db.Rebind(`INSERT INTO ` + s.table + ` (id,subject,envelope,attempts,available_at,published_at,last_error,version,created_at,updated_at,created_by,updated_by) VALUES (?,?,?,0,?,NULL,'',1,?,?,?,?)`)
+	if _, err := tx.ExecContext(ctx, query, event.ID, event.Subject, encoded, now, now, now, actor, actor); err != nil {
+		return fmt.Errorf("insert %s event %q: %w", s.table, event.ID, err)
+	}
+	return nil
+}
+
 func (s *SQLStore) Claim(ctx context.Context, limit int, lease time.Duration) ([]Event, error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
