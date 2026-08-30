@@ -83,3 +83,17 @@ func TestDiscoveryAllowsExpiredLeaseInsideBoundedStaleWindow(t *testing.T) {
 		t.Fatalf("Pick() = %+v, %v", selected, err)
 	}
 }
+
+func TestDiscoveryRequiresRefreshBeforeMaxStale(t *testing.T) {
+	_, err := NewDiscovery(discoveryStub{}, DiscoveryConfig{ServiceName: "orders-service", MaxStale: time.Minute, RefreshInterval: time.Minute})
+	if err == nil {
+		t.Fatal("refresh interval equal to max stale was accepted")
+	}
+	discovery, err := NewDiscovery(discoveryStub{}, DiscoveryConfig{ServiceName: "orders-service", MaxStale: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovery.config.RefreshInterval != 30*time.Second {
+		t.Fatalf("default refresh interval = %s", discovery.config.RefreshInterval)
+	}
+}

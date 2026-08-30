@@ -32,12 +32,13 @@ type Snapshot struct {
 	Instances []*registryv1.ServiceInstance `json:"instances"`
 }
 type DiscoveryConfig struct {
-	ServiceName   string
-	Selector      map[string]string
-	MaxStale      time.Duration
-	RetryMin      time.Duration
-	RetryMax      time.Duration
-	SnapshotStore SnapshotStore
+	ServiceName     string
+	Selector        map[string]string
+	MaxStale        time.Duration
+	RefreshInterval time.Duration
+	RetryMin        time.Duration
+	RetryMax        time.Duration
+	SnapshotStore   SnapshotStore
 }
 
 type Discovery struct {
@@ -56,6 +57,12 @@ func NewDiscovery(client DiscoveryClient, config DiscoveryConfig) (*Discovery, e
 	}
 	if config.MaxStale == 0 {
 		config.MaxStale = 2 * time.Minute
+	}
+	if config.RefreshInterval == 0 {
+		config.RefreshInterval = config.MaxStale / 2
+	}
+	if config.RefreshInterval <= 0 || config.RefreshInterval >= config.MaxStale {
+		return nil, errors.New("refresh interval must be positive and shorter than max stale")
 	}
 	if config.RetryMin == 0 {
 		config.RetryMin = 250 * time.Millisecond
@@ -96,10 +103,12 @@ func (d *Discovery) refresh(ctx context.Context) error {
 	return nil
 }
 func (d *Discovery) watch(ctx context.Context) error {
+	watchCtx, cancel := context.WithTimeout(ctx, d.config.RefreshInterval)
+	defer cancel()
 	d.mu.RLock()
 	revision := d.snapshot.Revision
 	d.mu.RUnlock()
-	stream, err := d.client.WatchService(ctx, &registryv1.WatchServiceRequest{ServiceName: d.config.ServiceName, Selector: &registryv1.MetadataSelector{Match: d.config.Selector}, AfterRevision: revision})
+	stream, err := d.client.WatchService(watchCtx, &registryv1.WatchServiceRequest{ServiceName: d.config.ServiceName, Selector: &registryv1.MetadataSelector{Match: d.config.Selector}, AfterRevision: revision})
 	if err != nil {
 		return err
 	}
