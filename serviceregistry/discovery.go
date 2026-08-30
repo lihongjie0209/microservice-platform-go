@@ -77,7 +77,8 @@ func (d *Discovery) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = d.config.RetryMin
-		if err := d.watch(ctx); err != nil && ctx.Err() == nil {
+		_ = d.watch(ctx)
+		if ctx.Err() == nil {
 			if !waitJitter(ctx, backoff) {
 				break
 			}
@@ -237,7 +238,7 @@ func (s FileSnapshotStore) Save(_ context.Context, service string, snapshot *Sna
 		return err
 	}
 	name := temporary.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if err = temporary.Chmod(0o600); err == nil {
 		_, err = temporary.Write(payload)
 	}
