@@ -67,3 +67,19 @@ func TestFileSnapshotStoreRoundTrip(t *testing.T) {
 		t.Fatalf("loaded=%+v", loaded)
 	}
 }
+
+func TestDiscoveryAllowsExpiredLeaseInsideBoundedStaleWindow(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	instance := &registryv1.ServiceInstance{InstanceId: "pod-1", Status: registryv1.InstanceStatus_INSTANCE_STATUS_HEALTHY, LeaseExpiresAt: timestamppb.New(now.Add(-time.Second))}
+	discovery, err := NewDiscovery(discoveryStub{response: &registryv1.ListInstancesResponse{Instances: []*registryv1.ServiceInstance{instance}}}, DiscoveryConfig{ServiceName: "orders-service", MaxStale: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery.now = func() time.Time { return now }
+	if err := discovery.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if selected, err := discovery.Pick(); err != nil || selected.InstanceId != "pod-1" {
+		t.Fatalf("Pick() = %+v, %v", selected, err)
+	}
+}

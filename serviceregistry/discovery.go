@@ -147,9 +147,8 @@ func (d *Discovery) Pick() (*registryv1.ServiceInstance, error) {
 		return nil, ErrNoHealthyInstance
 	}
 	available := make([]*registryv1.ServiceInstance, 0, len(d.snapshot.Instances))
-	now := d.now()
 	for _, value := range d.snapshot.Instances {
-		if value.Status == registryv1.InstanceStatus_INSTANCE_STATUS_HEALTHY && value.GetLeaseExpiresAt().AsTime().After(now) && !d.ejected[value.InstanceId].After(now) {
+		if value.Status == registryv1.InstanceStatus_INSTANCE_STATUS_HEALTHY && !d.ejected[value.InstanceId].After(d.now()) {
 			weight := value.Weight
 			if weight == 0 {
 				weight = 1
@@ -171,10 +170,9 @@ func (d *Discovery) Instances() ([]*registryv1.ServiceInstance, error) {
 	if d.snapshot == nil || d.now().Sub(d.snapshot.SavedAt) > d.config.MaxStale {
 		return nil, ErrNoHealthyInstance
 	}
-	now := d.now()
 	result := make([]*registryv1.ServiceInstance, 0, len(d.snapshot.Instances))
 	for _, value := range d.snapshot.Instances {
-		if value.Status == registryv1.InstanceStatus_INSTANCE_STATUS_HEALTHY && value.GetLeaseExpiresAt().AsTime().After(now) && !d.ejected[value.InstanceId].After(now) {
+		if value.Status == registryv1.InstanceStatus_INSTANCE_STATUS_HEALTHY && !d.ejected[value.InstanceId].After(d.now()) {
 			result = append(result, value)
 		}
 	}
