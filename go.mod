@@ -9,7 +9,7 @@ require (
 	github.com/go-redsync/redsync/v4 v4.17.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/lihongjie0209/platform-protos v0.7.0
+	github.com/lihongjie0209/platform-protos v0.8.0
 	github.com/nats-io/nats.go v1.53.1
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/testcontainers/testcontainers-go v0.44.0
