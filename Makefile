@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt test vet test-integration verify
+.PHONY: fmt test vet test-integration ci-test-integration verify
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -type f)
@@ -12,6 +12,9 @@ vet:
 	go vet ./...
 
 test-integration:
+	go test -tags=integration -run '^$$' ./integration/...
+
+ci-test-integration:
 	go test -tags=integration -count=1 -timeout=5m ./integration/...
 
 verify: test vet

@@ -31,4 +31,4 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -tags=integration -count=1 -timeout=15m ./integration/...
+      - run: make ci-test-integration
