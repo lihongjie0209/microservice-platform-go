@@ -15,8 +15,10 @@ var (
 )
 
 type Requirement struct {
-	Resource string
-	Action   string
+	Resource   string
+	ResourceID string
+	Action     string
+	Attributes map[string]string
 }
 
 type Authorizer interface {
