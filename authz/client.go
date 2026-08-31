@@ -70,6 +70,13 @@ func (a *GRPCAuthorizer) Authorize(ctx context.Context, identity principal.Princ
 }
 
 func authorizationTarget(identity principal.Principal, scope Scope) (string, *authorizationv1.Subject, error) {
+	if scope == ScopePrincipal {
+		if strings.TrimSpace(identity.TenantID) == "" {
+			scope = ScopePlatform
+		} else {
+			scope = ScopeTenant
+		}
+	}
 	if scope == ScopePlatform {
 		switch identity.Type {
 		case principal.TypeUser:

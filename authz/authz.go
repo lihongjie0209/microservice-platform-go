@@ -28,6 +28,7 @@ type Scope uint8
 const (
 	ScopeTenant Scope = iota
 	ScopePlatform
+	ScopePrincipal
 )
 
 type Authorizer interface {

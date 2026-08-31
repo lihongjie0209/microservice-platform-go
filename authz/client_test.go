@@ -57,6 +57,30 @@ func TestGRPCAuthorizerMapsGlobalUserToPlatformScope(t *testing.T) {
 	}
 }
 
+func TestGRPCAuthorizerPrincipalScopePreservesTenantBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		identity   principal.Principal
+		wantTenant string
+		wantID     string
+		wantType   authorizationv1.SubjectType
+	}{
+		{name: "tenant membership", identity: principal.Principal{ID: "user-1", Type: principal.TypeUser, TenantID: "tenant-1", MembershipID: "membership-1"}, wantTenant: "tenant-1", wantID: "membership-1", wantType: authorizationv1.SubjectType_SUBJECT_TYPE_MEMBERSHIP},
+		{name: "platform user", identity: principal.Principal{ID: "user-1", Type: principal.TypeUser}, wantTenant: authz.PlatformTenantID, wantID: "user-1", wantType: authorizationv1.SubjectType_SUBJECT_TYPE_USER},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &checker{allowed: true}
+			authorizer := authz.NewGRPCAuthorizer(client, time.Second)
+			if err := authorizer.Authorize(t.Context(), test.identity, authz.Requirement{Resource: "authorization.role", Action: "list", Scope: authz.ScopePrincipal}); err != nil {
+				t.Fatal(err)
+			}
+			if client.request.GetTenantId() != test.wantTenant || client.request.GetSubject().GetId() != test.wantID || client.request.GetSubject().GetType() != test.wantType {
+				t.Fatalf("request = %+v", client.request)
+			}
+		})
+	}
+}
+
 func TestGRPCAuthorizerFailsClosed(t *testing.T) {
 	tests := []struct {
 		name     string
