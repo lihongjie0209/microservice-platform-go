@@ -15,6 +15,8 @@ import (
 
 var ErrInvalidPrincipal = errors.New("principal cannot be mapped to an authorization subject")
 
+const PlatformTenantID = "__platform__"
+
 type CheckClient interface {
 	Check(context.Context, *authorizationv1.CheckRequest, ...grpc.CallOption) (*authorizationv1.CheckResponse, error)
 }
@@ -44,17 +46,14 @@ func (a *GRPCAuthorizer) Authorize(ctx context.Context, identity principal.Princ
 	if a == nil || a.client == nil {
 		return fmt.Errorf("%w: upstream is not configured", ErrDecisionUnavailable)
 	}
-	subject, err := authorizationSubject(identity)
+	tenantID, subject, err := authorizationTarget(identity, requirement.Scope)
 	if err != nil {
 		return err
-	}
-	if strings.TrimSpace(identity.TenantID) == "" {
-		return ErrInvalidPrincipal
 	}
 	callCtx, cancel := context.WithTimeout(forwardCallerCredential(ctx), a.timeout)
 	defer cancel()
 	response, err := a.client.Check(callCtx, &authorizationv1.CheckRequest{
-		TenantId:     identity.TenantID,
+		TenantId:     tenantID,
 		Subject:      subject,
 		ResourceType: requirement.Resource,
 		ResourceId:   requirement.ResourceID,
@@ -68,6 +67,30 @@ func (a *GRPCAuthorizer) Authorize(ctx context.Context, identity principal.Princ
 		return ErrDenied
 	}
 	return nil
+}
+
+func authorizationTarget(identity principal.Principal, scope Scope) (string, *authorizationv1.Subject, error) {
+	if scope == ScopePlatform {
+		switch identity.Type {
+		case principal.TypeUser:
+			if strings.TrimSpace(identity.ID) == "" {
+				return "", nil, ErrInvalidPrincipal
+			}
+			return PlatformTenantID, &authorizationv1.Subject{Id: identity.ID, Type: authorizationv1.SubjectType_SUBJECT_TYPE_USER}, nil
+		case principal.TypeServiceAccount, principal.TypeSystem:
+			if strings.TrimSpace(identity.ID) == "" {
+				return "", nil, ErrInvalidPrincipal
+			}
+			return PlatformTenantID, &authorizationv1.Subject{Id: identity.ID, Type: authorizationv1.SubjectType_SUBJECT_TYPE_SERVICE_ACCOUNT}, nil
+		default:
+			return "", nil, ErrInvalidPrincipal
+		}
+	}
+	if scope != ScopeTenant || strings.TrimSpace(identity.TenantID) == "" {
+		return "", nil, ErrInvalidPrincipal
+	}
+	subject, err := authorizationSubject(identity)
+	return identity.TenantID, subject, err
 }
 
 func authorizationSubject(identity principal.Principal) (*authorizationv1.Subject, error) {

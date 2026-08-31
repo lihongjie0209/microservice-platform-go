@@ -20,7 +20,15 @@ type Requirement struct {
 	ResourceID string
 	Action     string
 	Attributes map[string]string
+	Scope      Scope
 }
+
+type Scope uint8
+
+const (
+	ScopeTenant Scope = iota
+	ScopePlatform
+)
 
 type Authorizer interface {
 	Authorize(context.Context, principal.Principal, Requirement) error

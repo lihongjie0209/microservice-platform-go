@@ -45,6 +45,18 @@ func TestGRPCAuthorizerMapsMembershipAndForwardsCredential(t *testing.T) {
 	}
 }
 
+func TestGRPCAuthorizerMapsGlobalUserToPlatformScope(t *testing.T) {
+	client := &checker{allowed: true}
+	authorizer := authz.NewGRPCAuthorizer(client, time.Second)
+	err := authorizer.Authorize(t.Context(), principal.Principal{ID: "user-1", Type: principal.TypeUser}, authz.Requirement{Resource: "identity.user", Action: "list", Scope: authz.ScopePlatform})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.request.GetTenantId() != authz.PlatformTenantID || client.request.GetSubject().GetId() != "user-1" || client.request.GetSubject().GetType() != authorizationv1.SubjectType_SUBJECT_TYPE_USER {
+		t.Fatalf("request = %+v", client.request)
+	}
+}
+
 func TestGRPCAuthorizerFailsClosed(t *testing.T) {
 	tests := []struct {
 		name     string
