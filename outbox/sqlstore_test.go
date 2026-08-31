@@ -74,3 +74,50 @@ func TestSQLStoreAddTxRejectsEnvelopeMismatch(t *testing.T) {
 		t.Fatal("AddTx() error = nil")
 	}
 }
+
+func TestSQLStoreDeletePublishedBeforeDeletesBoundedTerminalEvents(t *testing.T) {
+	t.Parallel()
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := NewSQLStore(sqlx.NewDb(database, "sqlmock"), "workflow_outbox_events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM workflow_outbox_events WHERE published_at IS NOT NULL AND published_at<? ORDER BY published_at,id LIMIT ?")).
+		WithArgs(before, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("event-1").AddRow("event-2"))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM workflow_outbox_events WHERE id IN (?, ?) AND published_at IS NOT NULL AND published_at<?")).
+		WithArgs("event-1", "event-2", before).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	deleted, err := store.DeletePublishedBefore(t.Context(), before, 2)
+	if err != nil {
+		t.Fatalf("DeletePublishedBefore() error = %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLStoreDeletePublishedBeforeRejectsInvalidLimit(t *testing.T) {
+	t.Parallel()
+	database, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	store, err := NewSQLStore(sqlx.NewDb(database, "sqlmock"), "workflow_outbox_events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeletePublishedBefore(t.Context(), time.Now(), 0); err == nil {
+		t.Fatal("DeletePublishedBefore() error = nil")
+	}
+}

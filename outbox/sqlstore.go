@@ -98,6 +98,29 @@ func (s *SQLStore) MarkFailed(ctx context.Context, event Event, message string, 
 	return affected(result, err, s.table, event.ID)
 }
 
+// DeletePublishedBefore removes only terminal, successfully published events in
+// a bounded batch. Callers decide their own retention period and archival
+// policy; pending and failed events are never eligible for cleanup.
+func (s *SQLStore) DeletePublishedBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, errors.New("outbox cleanup limit must be positive")
+	}
+	var ids []string
+	selectQuery := s.db.Rebind(`SELECT id FROM ` + s.table + ` WHERE published_at IS NOT NULL AND published_at<? ORDER BY published_at,id LIMIT ?`)
+	if err := s.db.SelectContext(ctx, &ids, selectQuery, before, limit); err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	deleteQuery, args, err := sqlx.In(`DELETE FROM `+s.table+` WHERE id IN (?) AND published_at IS NOT NULL AND published_at<?`, ids, before)
+	if err != nil {
+		return 0, fmt.Errorf("build %s cleanup query: %w", s.table, err)
+	}
+	result, err := s.db.ExecContext(ctx, s.db.Rebind(deleteQuery), args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete published %s events: %w", s.table, err)
+	}
+	return result.RowsAffected()
+}
+
 func affected(result sql.Result, err error, table, id string) error {
 	if err != nil {
 		return fmt.Errorf("update %s event %q: %w", table, id, err)
