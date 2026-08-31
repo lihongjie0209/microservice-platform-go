@@ -127,6 +127,37 @@ func (s *SQLStore) Process(ctx context.Context, key Key, actor string, handler H
 	return Result{Attempts: attempts}, nil
 }
 
+// DeleteCompletedBefore removes only successfully completed inbox records in a
+// bounded batch. Schedule it with a retention horizon at least as long as the
+// corresponding event stream can replay messages.
+func (s *SQLStore) DeleteCompletedBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, errors.New("inbox cleanup limit must be positive")
+	}
+	var keys []struct {
+		Consumer string `db:"consumer"`
+		EventID  string `db:"event_id"`
+	}
+	selectQuery := s.db.Rebind(`SELECT consumer,event_id FROM ` + s.table + ` WHERE status='completed' AND completed_at<? ORDER BY completed_at,consumer,event_id LIMIT ?`)
+	if err := s.db.SelectContext(ctx, &keys, selectQuery, before, limit); err != nil || len(keys) == 0 {
+		return 0, err
+	}
+	var deleted int64
+	for _, key := range keys {
+		query := s.db.Rebind(`DELETE FROM ` + s.table + ` WHERE consumer=? AND event_id=? AND status='completed' AND completed_at<?`)
+		result, err := s.db.ExecContext(ctx, query, key.Consumer, key.EventID, before)
+		if err != nil {
+			return deleted, fmt.Errorf("delete completed inbox event: %w", err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return deleted, fmt.Errorf("count deleted inbox event: %w", err)
+		}
+		deleted += count
+	}
+	return deleted, nil
+}
+
 func validateInput(key Key, actor string, handler Handler) error {
 	if key.Consumer == "" || key.EventID == "" || actor == "" || handler == nil {
 		return errors.New("inbox consumer, event ID, actor, and handler are required")

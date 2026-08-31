@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
@@ -35,6 +36,32 @@ func TestNewSQLStoreValidatesDependencies(t *testing.T) {
 				t.Fatal("NewSQLStore() accepted invalid input")
 			}
 		})
+	}
+}
+
+func TestSQLStoreDeleteCompletedBeforeDeletesOnlyCompletedRows(t *testing.T) {
+	t.Parallel()
+	store, mock := newMockStore(t)
+	before := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT consumer,event_id FROM event_inbox WHERE status='completed' AND completed_at<? ORDER BY completed_at,consumer,event_id LIMIT ?")).
+		WithArgs(before, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"consumer", "event_id"}).AddRow("consumer-1", "event-1").AddRow("consumer-2", "event-2"))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM event_inbox WHERE consumer=? AND event_id=? AND status='completed' AND completed_at<?")).
+		WithArgs("consumer-1", "event-1", before).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM event_inbox WHERE consumer=? AND event_id=? AND status='completed' AND completed_at<?")).
+		WithArgs("consumer-2", "event-2", before).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	deleted, err := store.DeleteCompletedBefore(t.Context(), before, 2)
+	if err != nil {
+		t.Fatalf("DeleteCompletedBefore() error = %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
