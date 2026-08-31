@@ -21,8 +21,9 @@ func TestEnforce(t *testing.T) {
 	if err := authz.Enforce(ctx, authorizer{}, requirement); err != nil {
 		t.Fatalf("Enforce() error = %v", err)
 	}
-	if err := authz.Enforce(ctx, authorizer{err: errors.New("no binding")}, requirement); !errors.Is(err, authz.ErrDenied) {
-		t.Fatalf("Enforce() error = %v, want ErrDenied", err)
+	upstream := errors.New("upstream unavailable")
+	if err := authz.Enforce(ctx, authorizer{err: upstream}, requirement); !errors.Is(err, upstream) || errors.Is(err, authz.ErrDenied) {
+		t.Fatalf("Enforce() error = %v, want original upstream classification", err)
 	}
 	if err := authz.Enforce(t.Context(), authorizer{}, requirement); !errors.Is(err, principal.ErrMissing) {
 		t.Fatalf("Enforce() error = %v, want ErrMissing", err)

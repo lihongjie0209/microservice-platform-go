@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	ErrDenied             = errors.New("authorization denied")
-	ErrRequirementMissing = errors.New("authorization requirement is missing")
+	ErrDenied              = errors.New("authorization denied")
+	ErrRequirementMissing  = errors.New("authorization requirement is missing")
+	ErrDecisionUnavailable = errors.New("authorization decision is unavailable")
 )
 
 type Requirement struct {
@@ -34,7 +35,7 @@ func Enforce(ctx context.Context, authorizer Authorizer, requirement Requirement
 		return ErrRequirementMissing
 	}
 	if err := authorizer.Authorize(ctx, identity, requirement); err != nil {
-		return errors.Join(ErrDenied, err)
+		return err
 	}
 	return nil
 }

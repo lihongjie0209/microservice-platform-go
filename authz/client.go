@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ func WithCallerCredential(ctx context.Context, value string) context.Context {
 
 func (a *GRPCAuthorizer) Authorize(ctx context.Context, identity principal.Principal, requirement Requirement) error {
 	if a == nil || a.client == nil {
-		return errors.New("authorization upstream is not configured")
+		return fmt.Errorf("%w: upstream is not configured", ErrDecisionUnavailable)
 	}
 	subject, err := authorizationSubject(identity)
 	if err != nil {
@@ -61,7 +62,7 @@ func (a *GRPCAuthorizer) Authorize(ctx context.Context, identity principal.Princ
 		Attributes:   requirement.Attributes,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrDecisionUnavailable, err)
 	}
 	if !response.GetAllowed() {
 		return ErrDenied

@@ -22,7 +22,10 @@ func UnaryServerInterceptor(authorizer Authorizer, resolve GRPCResolver) grpc.Un
 			if errors.Is(err, principal.ErrMissing) {
 				return nil, status.Error(codes.Unauthenticated, "authenticated principal is required")
 			}
-			return nil, status.Error(codes.PermissionDenied, "permission denied")
+			if errors.Is(err, ErrDenied) || errors.Is(err, ErrInvalidPrincipal) {
+				return nil, status.Error(codes.PermissionDenied, "permission denied")
+			}
+			return nil, status.Error(codes.Unavailable, "authorization decision is unavailable")
 		}
 		return handler(ctx, request)
 	}

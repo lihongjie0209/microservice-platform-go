@@ -52,21 +52,16 @@ func TestGRPCAuthorizerFailsClosed(t *testing.T) {
 		identity principal.Principal
 		want     error
 	}{
-		{name: "missing client", identity: principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount, TenantID: "tenant-1"}},
+		{name: "missing client", identity: principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount, TenantID: "tenant-1"}, want: authz.ErrDecisionUnavailable},
 		{name: "user missing membership", client: &checker{allowed: true}, identity: principal.Principal{ID: "user-1", Type: principal.TypeUser, TenantID: "tenant-1"}, want: authz.ErrInvalidPrincipal},
 		{name: "missing tenant", client: &checker{allowed: true}, identity: principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount}, want: authz.ErrInvalidPrincipal},
 		{name: "denied", client: &checker{}, identity: principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount, TenantID: "tenant-1"}, want: authz.ErrDenied},
+		{name: "upstream failure", client: &checker{err: errors.New("unavailable")}, identity: principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount, TenantID: "tenant-1"}, want: authz.ErrDecisionUnavailable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			authorizer := authz.NewGRPCAuthorizer(test.client, time.Second)
 			err := authorizer.Authorize(t.Context(), test.identity, authz.Requirement{Resource: "resource", Action: "read"})
-			if test.want == nil {
-				if err == nil {
-					t.Fatal("Authorize() error = nil")
-				}
-				return
-			}
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Authorize() error = %v, want %v", err, test.want)
 			}
