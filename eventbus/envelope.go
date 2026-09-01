@@ -15,6 +15,7 @@ type Metadata struct {
 	AggregateID   string
 	AggregateType string
 	TenantID      string
+	ApplicationID string
 	SchemaVersion uint32
 	RequestID     string
 	TraceID       string
@@ -44,7 +45,7 @@ func NewEnvelope(metadata Metadata, payload proto.Message) (*commonv1.EventEnvel
 	return &commonv1.EventEnvelope{
 		EventId: metadata.EventID, EventType: metadata.EventType,
 		AggregateId: metadata.AggregateID, AggregateType: metadata.AggregateType,
-		TenantId: metadata.TenantID, SchemaVersion: metadata.SchemaVersion,
+		TenantId: metadata.TenantID, ApplicationId: metadata.ApplicationID, SchemaVersion: metadata.SchemaVersion,
 		OccurredAt: timestamppb.New(occurredAt),
 		Context: &commonv1.RequestContext{
 			RequestId: metadata.RequestID, TraceId: metadata.TraceID,

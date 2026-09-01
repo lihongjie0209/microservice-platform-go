@@ -29,7 +29,8 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	envelope, err := NewEnvelope(Metadata{
 		EventID: "event-1", EventType: "platform.identity.user.status-changed.v1",
 		AggregateID: "user-1", AggregateType: "user", SchemaVersion: 1,
-		RequestID: "request-1", TraceID: "trace-1", OccurredAt: time.Unix(1, 0).UTC(),
+		ApplicationID: "application-1",
+		RequestID:     "request-1", TraceID: "trace-1", OccurredAt: time.Unix(1, 0).UTC(),
 	}, payload)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +39,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if err := DecodePayload(envelope, decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.UserId != payload.UserId || envelope.Context.RequestId != "request-1" {
+	if decoded.UserId != payload.UserId || envelope.Context.RequestId != "request-1" || envelope.GetApplicationId() != "application-1" {
 		t.Fatalf("decoded payload or context mismatch: %+v %+v", decoded, envelope.Context)
 	}
 }
