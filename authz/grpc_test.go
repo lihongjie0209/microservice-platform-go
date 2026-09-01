@@ -25,6 +25,33 @@ func TestUnaryServerInterceptorClassifiesAuthorizationFailures(t *testing.T) {
 	}
 }
 
+func TestStreamServerInterceptorClassifiesAuthorizationFailures(t *testing.T) {
+	t.Parallel()
+	requirement := func(string) (authz.Requirement, bool) {
+		return authz.Requirement{Resource: "resource", Action: "watch"}, true
+	}
+	if code := invokeStreamAuthorizationInterceptor(t, authz.ErrDenied, requirement); code != codes.PermissionDenied {
+		t.Fatalf("denied code = %s", code)
+	}
+	if code := invokeStreamAuthorizationInterceptor(t, errors.New("upstream"), requirement); code != codes.Unavailable {
+		t.Fatalf("upstream code = %s", code)
+	}
+}
+
+type serverStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (stream serverStream) Context() context.Context { return stream.ctx }
+
+func invokeStreamAuthorizationInterceptor(t *testing.T, err error, resolver authz.GRPCResolver) codes.Code {
+	t.Helper()
+	ctx := principal.WithContext(t.Context(), principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount})
+	callErr := authz.StreamServerInterceptor(authorizer{err: err}, resolver)(nil, serverStream{ctx: ctx}, &grpc.StreamServerInfo{FullMethod: "/test.Service/Watch"}, func(any, grpc.ServerStream) error { return nil })
+	return status.Code(callErr)
+}
+
 func invokeAuthorizationInterceptor(t *testing.T, err error, resolver authz.GRPCResolver) codes.Code {
 	t.Helper()
 	ctx := principal.WithContext(t.Context(), principal.Principal{ID: "service-1", Type: principal.TypeServiceAccount, TenantID: "tenant-1"})

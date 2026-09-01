@@ -19,14 +19,32 @@ func UnaryServerInterceptor(authorizer Authorizer, resolve GRPCResolver) grpc.Un
 			return handler(ctx, request)
 		}
 		if err := Enforce(ctx, authorizer, requirement); err != nil {
-			if errors.Is(err, principal.ErrMissing) {
-				return nil, status.Error(codes.Unauthenticated, "authenticated principal is required")
-			}
-			if errors.Is(err, ErrDenied) || errors.Is(err, ErrInvalidPrincipal) {
-				return nil, status.Error(codes.PermissionDenied, "permission denied")
-			}
-			return nil, status.Error(codes.Unavailable, "authorization decision is unavailable")
+			return nil, grpcAuthorizationError(err)
 		}
 		return handler(ctx, request)
 	}
+}
+
+// StreamServerInterceptor enforces authorization requirements for streaming RPCs.
+func StreamServerInterceptor(authorizer Authorizer, resolve GRPCResolver) grpc.StreamServerInterceptor {
+	return func(server any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		requirement, protected := resolve(info.FullMethod)
+		if !protected {
+			return handler(server, stream)
+		}
+		if err := Enforce(stream.Context(), authorizer, requirement); err != nil {
+			return grpcAuthorizationError(err)
+		}
+		return handler(server, stream)
+	}
+}
+
+func grpcAuthorizationError(err error) error {
+	if errors.Is(err, principal.ErrMissing) {
+		return status.Error(codes.Unauthenticated, "authenticated principal is required")
+	}
+	if errors.Is(err, ErrDenied) || errors.Is(err, ErrInvalidPrincipal) {
+		return status.Error(codes.PermissionDenied, "permission denied")
+	}
+	return status.Error(codes.Unavailable, "authorization decision is unavailable")
 }
