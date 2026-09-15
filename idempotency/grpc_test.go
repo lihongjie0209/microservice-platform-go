@@ -42,6 +42,24 @@ func grpcTestContext(callerID string) context.Context {
 	return WithContext(ctx, "operation-1")
 }
 
+func TestGRPCFingerprintIncludesTenantAndMembership(t *testing.T) {
+	t.Parallel()
+	request := &grpc_health_v1.HealthCheckRequest{Service: "api"}
+	base := principal.WithContext(context.Background(), principal.Principal{ID: "user-1", Type: principal.TypeUser, TenantID: "tenant-1", MembershipID: "member-1", SessionID: "session-1"})
+	otherTenant := principal.WithContext(context.Background(), principal.Principal{ID: "user-1", Type: principal.TypeUser, TenantID: "tenant-2", MembershipID: "member-2", SessionID: "session-1"})
+	first, err := grpcFingerprint(base, "/grpc.health.v1.Health/Check", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := grpcFingerprint(otherTenant, "/grpc.health.v1.Health/Check", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("fingerprints for different tenant contexts must differ")
+	}
+}
+
 func TestUnaryServerInterceptorCompletesAndReplays(t *testing.T) {
 	t.Parallel()
 	const method = "/grpc.health.v1.Health/Check"

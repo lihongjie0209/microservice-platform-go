@@ -117,6 +117,10 @@ func grpcFingerprint(ctx context.Context, method string, request any) (string, e
 	caller, _ := principal.FromContext(ctx)
 	hash := sha256.New()
 	_, _ = hash.Write([]byte(caller.ID))
+	_, _ = hash.Write([]byte("\x00" + string(caller.Type)))
+	_, _ = hash.Write([]byte("\x00" + caller.TenantID))
+	_, _ = hash.Write([]byte("\x00" + caller.MembershipID))
+	_, _ = hash.Write([]byte("\x00" + caller.SessionID))
 	_, _ = hash.Write([]byte("\x00" + method + "\x00"))
 	_, _ = hash.Write(payload)
 	return hex.EncodeToString(hash.Sum(nil)), nil
