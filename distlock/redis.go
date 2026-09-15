@@ -106,7 +106,7 @@ func (l *RedisLocker) newMutex(key string, ttl time.Duration, options ...redsync
 func (l *redisMutex) Extend(ctx context.Context) error {
 	ok, err := l.mutex.ExtendContext(ctx)
 	if err != nil {
-		return fmt.Errorf("extend redis lock %q: %w", l.mutex.Name(), err)
+		return fmt.Errorf("extend redis lock %q: %w", l.mutex.Name(), errors.Join(ErrNotOwned, err))
 	}
 	if !ok {
 		return fmt.Errorf("extend redis lock %q: %w", l.mutex.Name(), ErrNotOwned)
@@ -117,6 +117,9 @@ func (l *redisMutex) Extend(ctx context.Context) error {
 func (l *redisMutex) Unlock(ctx context.Context) error {
 	ok, err := l.mutex.UnlockContext(ctx)
 	if err != nil {
+		if isContention(err) || errors.Is(err, redsync.ErrLockAlreadyExpired) {
+			return fmt.Errorf("release redis lock %q: %w", l.mutex.Name(), errors.Join(ErrNotOwned, err))
+		}
 		return fmt.Errorf("release redis lock %q: %w", l.mutex.Name(), err)
 	}
 	if !ok {

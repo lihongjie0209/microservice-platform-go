@@ -54,6 +54,21 @@ func TestWithLockValidatesDependencies(t *testing.T) {
 	}
 }
 
+func TestExtendReportsOwnershipLoss(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	locker := distlock.NewRedisLocker(client)
+	lock, acquired, err := locker.TryLock(t.Context(), "lost", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquired=%v err=%v", acquired, err)
+	}
+	server.Del("lock:lost")
+	if err := lock.Extend(t.Context()); !errors.Is(err, distlock.ErrNotOwned) {
+		t.Fatalf("Extend error=%v", err)
+	}
+}
+
 func TestRedisLocker_ContentionOwnershipAndReuse(t *testing.T) {
 	locker := newLocker(t)
 	first, acquired, err := locker.TryLock(t.Context(), "job", time.Minute)
