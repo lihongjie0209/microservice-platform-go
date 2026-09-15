@@ -3,6 +3,7 @@ package idempotency
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -77,5 +78,62 @@ func TestManagerPersistsFailureAndRejectsExpiredOwner(t *testing.T) {
 	failed, err := manager.Begin(ctx, "operation-2", "fingerprint-1")
 	if err != nil || failed.State != StateFailed || failed.Failure != failure {
 		t.Fatalf("failed=%+v error=%v", failed, err)
+	}
+}
+
+func TestManagerLeaseRenewsProcessingState(t *testing.T) {
+	t.Parallel()
+	server := miniredis.RunT(t)
+	manager := New(redis.NewClient(&redis.Options{Addr: server.Addr()}), Config{
+		Enabled: true, Service: "billing-service", ProcessingTTL: 90 * time.Millisecond,
+		ResultTTL: time.Hour, FailureTTL: time.Minute,
+	})
+	acquired, err := manager.Begin(t.Context(), "operation-lease", "fingerprint-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseCtx, stop, err := manager.StartLease(t.Context(), "operation-lease", acquired.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stop() })
+	time.Sleep(55 * time.Millisecond)
+	if err := leaseCtx.Err(); err != nil {
+		t.Fatalf("lease context canceled after renewal: %v", err)
+	}
+	if ttl := server.TTL(manager.storageKey("operation-lease")); ttl < 60*time.Millisecond {
+		t.Fatalf("renewed TTL = %v, want at least 60ms", ttl)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("stop lease: %v", err)
+	}
+}
+
+func TestManagerLeaseCancelsWhenOwnershipIsLost(t *testing.T) {
+	t.Parallel()
+	server := miniredis.RunT(t)
+	manager := New(redis.NewClient(&redis.Options{Addr: server.Addr()}), Config{
+		Enabled: true, Service: "billing-service", ProcessingTTL: 30 * time.Millisecond,
+		ResultTTL: time.Hour, FailureTTL: time.Minute,
+	})
+	acquired, err := manager.Begin(t.Context(), "operation-lost", "fingerprint-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseCtx, stop, err := manager.StartLease(t.Context(), "operation-lost", acquired.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Del(manager.storageKey("operation-lost"))
+	select {
+	case <-leaseCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("lease context was not canceled")
+	}
+	if !errors.Is(context.Cause(leaseCtx), ErrOwnershipExpired) {
+		t.Fatalf("lease cause = %v, want ErrOwnershipExpired", context.Cause(leaseCtx))
+	}
+	if err := stop(); !errors.Is(err, ErrOwnershipExpired) {
+		t.Fatalf("stop lease = %v, want ErrOwnershipExpired", err)
 	}
 }

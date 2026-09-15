@@ -28,6 +28,10 @@ type ManagerAPI interface {
 	Fail(context.Context, string, string, Failure) error
 }
 
+type leaseManager interface {
+	StartLease(context.Context, string, string) (context.Context, func() error, error)
+}
+
 type cachedGRPCResponse struct {
 	Payload []byte `json:"payload"`
 }
@@ -60,7 +64,24 @@ func UnaryServerInterceptor(manager ManagerAPI, methods []string, logger *slog.L
 			return nil, status.Error(codes.Unavailable, "idempotency state is invalid")
 		}
 
-		response, handlerErr := handler(ctx, request)
+		handlerCtx := ctx
+		stopLease := func() error { return nil }
+		if leases, ok := manager.(leaseManager); ok {
+			handlerCtx, stopLease, err = leases.StartLease(ctx, key, decision.Owner)
+			if err != nil {
+				return nil, status.Error(codes.Unavailable, "idempotency lease is unavailable")
+			}
+		}
+		response, handlerErr := handler(handlerCtx, request)
+		if leaseErr := stopLease(); leaseErr != nil {
+			if logger != nil {
+				logger.ErrorContext(ctx, "idempotency lease lost", "error", leaseErr, "method", info.FullMethod)
+			}
+			if errors.Is(leaseErr, ErrOwnershipExpired) {
+				return nil, status.Error(codes.Aborted, "idempotency ownership expired")
+			}
+			return nil, status.Error(codes.Unavailable, "idempotency lease is unavailable")
+		}
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 		if handlerErr != nil {

@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+var ErrOwnershipExpired = errors.New("idempotency ownership expired")
 
 type State string
 
@@ -96,6 +99,75 @@ func (m *Manager) Begin(ctx context.Context, key, fingerprint string) (Decision,
 	return decision, nil
 }
 
+var renewScript = redis.NewScript(`
+if redis.call('HGET', KEYS[1], 'state') ~= 'processing' or redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then return 0 end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
+`)
+
+// Renew extends a processing record only while owner still holds it.
+func (m *Manager) Renew(ctx context.Context, key, owner string) error {
+	if !m.Enabled() || m.client == nil || key == "" || owner == "" || m.cfg.ProcessingTTL <= 0 {
+		return errors.New("idempotency is unavailable")
+	}
+	changed, err := renewScript.Run(ctx, m.client, []string{m.storageKey(key)}, owner, m.cfg.ProcessingTTL.Milliseconds()).Int()
+	if err != nil {
+		return fmt.Errorf("renew idempotency request: %w", err)
+	}
+	if changed != 1 {
+		return ErrOwnershipExpired
+	}
+	return nil
+}
+
+// StartLease keeps a processing record alive and cancels the returned context
+// if Redis becomes unavailable or ownership is lost. The returned stop function
+// must be called exactly once after protected work finishes; it waits for the
+// renewal goroutine to exit and returns any renewal error.
+func (m *Manager) StartLease(ctx context.Context, key, owner string) (context.Context, func() error, error) {
+	if !m.Enabled() || m.client == nil || key == "" || owner == "" || m.cfg.ProcessingTTL <= 0 {
+		return nil, nil, errors.New("idempotency is unavailable")
+	}
+	interval := m.cfg.ProcessingTTL / 3
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	leaseCtx, cancel := context.WithCancelCause(ctx)
+	stopCh := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				done <- nil
+				return
+			case <-leaseCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := m.Renew(leaseCtx, key, owner); err != nil {
+					cancel(err)
+					done <- err
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	var leaseErr error
+	stop := func() error {
+		once.Do(func() {
+			close(stopCh)
+			leaseErr = <-done
+			cancel(nil)
+		})
+		return leaseErr
+	}
+	return leaseCtx, stop, nil
+}
+
 var finishScript = redis.NewScript(`
 if redis.call('HGET', KEYS[1], 'state') ~= 'processing' or redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then return 0 end
 redis.call('HSET', KEYS[1], 'state', ARGV[2], ARGV[3], ARGV[4])
@@ -114,7 +186,7 @@ func (m *Manager) Complete(ctx context.Context, key, owner string, response any)
 		return fmt.Errorf("complete idempotency request: %w", err)
 	}
 	if changed != 1 {
-		return errors.New("idempotency ownership expired")
+		return ErrOwnershipExpired
 	}
 	return nil
 }
@@ -129,7 +201,7 @@ func (m *Manager) Fail(ctx context.Context, key, owner string, failure Failure) 
 		return fmt.Errorf("fail idempotency request: %w", err)
 	}
 	if changed != 1 {
-		return errors.New("idempotency ownership expired")
+		return ErrOwnershipExpired
 	}
 	return nil
 }
