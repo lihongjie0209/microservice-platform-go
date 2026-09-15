@@ -11,6 +11,44 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func TestWithLockRenewsLeaseDuringCallback(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	locker := distlock.NewRedisLocker(client)
+	started := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		finished <- distlock.WithLock(t.Context(), locker, "long-job", 120*time.Millisecond, 10*time.Millisecond, func(ctx context.Context) error {
+			close(started)
+			timer := time.NewTimer(260 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			case <-timer.C:
+				return nil
+			}
+		})
+	}()
+	<-started
+	time.Sleep(180 * time.Millisecond)
+	_, acquired, err := locker.TryLock(t.Context(), "long-job", time.Second)
+	if err != nil || acquired {
+		t.Fatalf("contending TryLock acquired=%v err=%v", acquired, err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWithLockValidatesDependencies(t *testing.T) {
+	err := distlock.WithLock(t.Context(), nil, "job", time.Second, time.Millisecond, func(context.Context) error { return nil })
+	if !errors.Is(err, distlock.ErrInvalid) {
+		t.Fatalf("WithLock error=%v", err)
+	}
+}
+
 func TestRedisLocker_ContentionOwnershipAndReuse(t *testing.T) {
 	locker := newLocker(t)
 	first, acquired, err := locker.TryLock(t.Context(), "job", time.Minute)

@@ -17,6 +17,11 @@ import (
 
 const defaultPrefix = "lock:"
 
+var (
+	ErrInvalid  = errors.New("invalid distributed lock request")
+	ErrNotOwned = errors.New("distributed lock is no longer owned")
+)
+
 // Mutex is an acquired, ownership-token-protected lease.
 type Mutex interface {
 	Extend(context.Context) error
@@ -71,7 +76,7 @@ func (l *RedisLocker) TryLock(ctx context.Context, key string, ttl time.Duration
 
 func (l *RedisLocker) Lock(ctx context.Context, key string, ttl, retryDelay time.Duration) (Mutex, error) {
 	if retryDelay <= 0 {
-		return nil, errors.New("lock retry delay must be positive")
+		return nil, fmt.Errorf("%w: retry delay must be positive", ErrInvalid)
 	}
 	mutex, err := l.newMutex(key, ttl, redsync.WithRetryDelay(retryDelay))
 	if err != nil {
@@ -88,10 +93,10 @@ func (l *RedisLocker) Lock(ctx context.Context, key string, ttl, retryDelay time
 
 func (l *RedisLocker) newMutex(key string, ttl time.Duration, options ...redsync.Option) (*redsync.Mutex, error) {
 	if strings.TrimSpace(key) == "" {
-		return nil, errors.New("lock key must not be empty")
+		return nil, fmt.Errorf("%w: key must not be empty", ErrInvalid)
 	}
 	if ttl <= 0 {
-		return nil, errors.New("lock ttl must be positive")
+		return nil, fmt.Errorf("%w: ttl must be positive", ErrInvalid)
 	}
 	options = append(options, redsync.WithExpiry(ttl))
 	return l.redsync.NewMutex(l.prefix+key, options...), nil
@@ -103,7 +108,7 @@ func (l *redisMutex) Extend(ctx context.Context) error {
 		return fmt.Errorf("extend redis lock %q: %w", l.mutex.Name(), err)
 	}
 	if !ok {
-		return fmt.Errorf("extend redis lock %q: lock is no longer owned", l.mutex.Name())
+		return fmt.Errorf("extend redis lock %q: %w", l.mutex.Name(), ErrNotOwned)
 	}
 	return nil
 }
@@ -114,9 +119,63 @@ func (l *redisMutex) Unlock(ctx context.Context) error {
 		return fmt.Errorf("release redis lock %q: %w", l.mutex.Name(), err)
 	}
 	if !ok {
-		return fmt.Errorf("release redis lock %q: lock is no longer owned", l.mutex.Name())
+		return fmt.Errorf("release redis lock %q: %w", l.mutex.Name(), ErrNotOwned)
 	}
 	return nil
+}
+
+// WithLock acquires a lease, renews it every third of its TTL, and cancels the
+// callback context if renewal proves that ownership was lost. The callback
+// must honor cancellation and durable writes still need an optimistic version
+// or fencing token because no lease can stop a paused process from resuming.
+func WithLock(ctx context.Context, locker Locker, key string, ttl, retryDelay time.Duration, fn func(context.Context) error) error {
+	if locker == nil || fn == nil {
+		return fmt.Errorf("%w: locker and callback are required", ErrInvalid)
+	}
+	mutex, err := locker.Lock(ctx, key, ttl, retryDelay)
+	if err != nil {
+		return err
+	}
+	leaseCtx, cancel := context.WithCancelCause(ctx)
+	extendErrors := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		interval := ttl / 3
+		if interval <= 0 {
+			interval = time.Nanosecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-leaseCtx.Done():
+				return
+			case <-ticker.C:
+				if extendErr := mutex.Extend(leaseCtx); extendErr != nil {
+					extendErrors <- extendErr
+					cancel(extendErr)
+					return
+				}
+			}
+		}
+	}()
+	callbackErr := fn(leaseCtx)
+	cancel(nil)
+	<-done
+	var extendErr error
+	select {
+	case extendErr = <-extendErrors:
+	default:
+	}
+	unlockTimeout := ttl
+	if unlockTimeout > 5*time.Second {
+		unlockTimeout = 5 * time.Second
+	}
+	unlockCtx, unlockCancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
+	unlockErr := mutex.Unlock(unlockCtx)
+	unlockCancel()
+	return errors.Join(callbackErr, extendErr, unlockErr)
 }
 
 func (l *redisMutex) Until() time.Time { return l.mutex.Until() }
