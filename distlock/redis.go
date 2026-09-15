@@ -133,16 +133,41 @@ func (l *redisMutex) Unlock(ctx context.Context) error {
 // must honor cancellation and durable writes still need an optimistic version
 // or fencing token because no lease can stop a paused process from resuming.
 func WithLock(ctx context.Context, locker Locker, key string, ttl, retryDelay time.Duration, fn func(context.Context) error) error {
+	if err := validateLeaseInputs(locker, ttl, fn); err != nil {
+		return err
+	}
+	mutex, err := locker.Lock(ctx, key, ttl, retryDelay)
+	if err != nil {
+		return err
+	}
+	return runLease(ctx, mutex, ttl, fn)
+}
+
+// TryWithLock attempts to acquire a lease once. Contention returns
+// (false, nil) without running fn. An acquired lease is renewed and ownership
+// loss cancels the callback context with its cause.
+func TryWithLock(ctx context.Context, locker Locker, key string, ttl time.Duration, fn func(context.Context) error) (bool, error) {
+	if err := validateLeaseInputs(locker, ttl, fn); err != nil {
+		return false, err
+	}
+	mutex, acquired, err := locker.TryLock(ctx, key, ttl)
+	if err != nil || !acquired {
+		return acquired, err
+	}
+	return true, runLease(ctx, mutex, ttl, fn)
+}
+
+func validateLeaseInputs(locker Locker, ttl time.Duration, fn func(context.Context) error) error {
 	if locker == nil || fn == nil {
 		return fmt.Errorf("%w: locker and callback are required", ErrInvalid)
 	}
 	if ttl < 3*time.Millisecond {
 		return fmt.Errorf("%w: auto-renewed lock ttl must be at least 3ms", ErrInvalid)
 	}
-	mutex, err := locker.Lock(ctx, key, ttl, retryDelay)
-	if err != nil {
-		return err
-	}
+	return nil
+}
+
+func runLease(ctx context.Context, mutex Mutex, ttl time.Duration, fn func(context.Context) error) error {
 	leaseCtx, cancel := context.WithCancelCause(ctx)
 	extendErrors := make(chan error, 1)
 	done := make(chan struct{})
@@ -160,6 +185,9 @@ func WithLock(ctx context.Context, locker Locker, key string, ttl, retryDelay ti
 				return
 			case <-ticker.C:
 				if extendErr := mutex.Extend(leaseCtx); extendErr != nil {
+					if leaseCtx.Err() != nil {
+						return
+					}
 					extendErrors <- extendErr
 					cancel(extendErr)
 					return

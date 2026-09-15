@@ -54,6 +54,40 @@ func TestWithLockValidatesDependencies(t *testing.T) {
 	}
 }
 
+func TestTryWithLockSkipsContention(t *testing.T) {
+	locker := newLocker(t)
+	first, acquired, err := locker.TryLock(t.Context(), "scheduled-job", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("first lock acquired=%v err=%v", acquired, err)
+	}
+	t.Cleanup(func() { _ = first.Unlock(context.Background()) })
+	called := false
+	acquired, err = distlock.TryWithLock(t.Context(), locker, "scheduled-job", time.Minute, func(context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil || acquired || called {
+		t.Fatalf("TryWithLock acquired=%v called=%v err=%v", acquired, called, err)
+	}
+}
+
+func TestTryWithLockRenewsAcquiredLease(t *testing.T) {
+	locker := newLocker(t)
+	acquired, err := distlock.TryWithLock(t.Context(), locker, "scheduled-job", 90*time.Millisecond, func(ctx context.Context) error {
+		timer := time.NewTimer(210 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-timer.C:
+			return nil
+		}
+	})
+	if err != nil || !acquired {
+		t.Fatalf("TryWithLock acquired=%v err=%v", acquired, err)
+	}
+}
+
 func TestExtendReportsOwnershipLoss(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
