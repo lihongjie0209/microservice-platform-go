@@ -3,6 +3,7 @@ package authz
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 )
 
@@ -17,6 +18,26 @@ type Policy struct {
 	Operation   string
 	Public      bool
 	Requirement Requirement
+}
+
+// HTTPResolver adapts the registry to HTTPMiddleware. Unknown routes are
+// intentionally returned as protected with an empty requirement (fail closed).
+func (r *PolicyRegistry) HTTPResolver(request *http.Request) (Requirement, bool) {
+	requirement, public, err := r.Resolve(request.URL.Path)
+	if err != nil {
+		return Requirement{}, true
+	}
+	return requirement, !public
+}
+
+// GRPCResolver adapts the registry to unary and stream interceptors. Unknown
+// methods fail closed through ErrRequirementMissing.
+func (r *PolicyRegistry) GRPCResolver(fullMethod string) (Requirement, bool) {
+	requirement, public, err := r.Resolve(fullMethod)
+	if err != nil {
+		return Requirement{}, true
+	}
+	return requirement, !public
 }
 
 // PolicyRegistry is immutable after construction and safe for concurrent use.
