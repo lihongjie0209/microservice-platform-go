@@ -18,6 +18,7 @@ type fakeGRPCManager struct {
 	fingerprint string
 	completed   *cachedGRPCResponse
 	failed      *Failure
+	aborted     bool
 }
 
 func (*fakeGRPCManager) Enabled() bool { return true }
@@ -34,6 +35,10 @@ func (m *fakeGRPCManager) Complete(_ context.Context, _, _ string, response any)
 }
 func (m *fakeGRPCManager) Fail(_ context.Context, _, _ string, failure Failure) error {
 	m.failed = &failure
+	return nil
+}
+func (m *fakeGRPCManager) Abort(context.Context, string, string) error {
+	m.aborted = true
 	return nil
 }
 
@@ -92,6 +97,18 @@ func TestUnaryServerInterceptorPersistsFailure(t *testing.T) {
 	})
 	if status.Code(err) != codes.PermissionDenied || manager.failed == nil || manager.failed.GRPCCode != int(codes.PermissionDenied) || manager.failed.Message != "denied" {
 		t.Fatalf("error=%v failed=%+v", err, manager.failed)
+	}
+}
+
+func TestUnaryServerInterceptorAbortsRetryableFailure(t *testing.T) {
+	t.Parallel()
+	manager := &fakeGRPCManager{decision: Decision{State: StateAcquired, Owner: "owner-1"}}
+	interceptor := UnaryServerInterceptor(manager, []string{"/grpc.health.v1.Health/Check"}, nil)
+	_, err := interceptor(grpcTestContext("user-1"), &grpc_health_v1.HealthCheckRequest{}, &grpc.UnaryServerInfo{FullMethod: "/grpc.health.v1.Health/Check"}, func(context.Context, any) (any, error) {
+		return nil, status.Error(codes.Unavailable, "temporary")
+	})
+	if status.Code(err) != codes.Unavailable || !manager.aborted || manager.failed != nil {
+		t.Fatalf("error=%v aborted=%v failed=%+v", err, manager.aborted, manager.failed)
 	}
 }
 

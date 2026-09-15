@@ -137,3 +137,43 @@ func TestManagerLeaseCancelsWhenOwnershipIsLost(t *testing.T) {
 		t.Fatalf("stop lease = %v, want ErrOwnershipExpired", err)
 	}
 }
+
+func TestManagerAbortAllowsRetryAndProtectsOtherOwner(t *testing.T) {
+	t.Parallel()
+	server := miniredis.RunT(t)
+	manager := testManager(t, server, "billing-service")
+	first, err := manager.Begin(t.Context(), "operation-abort", "fingerprint-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Abort(t.Context(), "operation-abort", "other-owner"); !errors.Is(err, ErrOwnershipExpired) {
+		t.Fatalf("stale Abort() = %v, want ErrOwnershipExpired", err)
+	}
+	if err := manager.Abort(t.Context(), "operation-abort", first.Owner); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := manager.Begin(t.Context(), "operation-abort", "fingerprint-1")
+	if err != nil || retried.State != StateAcquired || retried.Owner == first.Owner {
+		t.Fatalf("retried=%+v error=%v", retried, err)
+	}
+}
+
+func TestManagerRejectsOversizedResponseAndReleasesOwner(t *testing.T) {
+	t.Parallel()
+	server := miniredis.RunT(t)
+	manager := New(redis.NewClient(&redis.Options{Addr: server.Addr()}), Config{
+		Enabled: true, Service: "billing-service", ProcessingTTL: time.Minute,
+		ResultTTL: time.Hour, FailureTTL: time.Minute, MaxResponseBytes: 8,
+	})
+	first, err := manager.Begin(t.Context(), "operation-large", "fingerprint-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Complete(t.Context(), "operation-large", first.Owner, map[string]string{"value": "too large"}); !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("Complete() = %v, want ErrResponseTooLarge", err)
+	}
+	retried, err := manager.Begin(t.Context(), "operation-large", "fingerprint-1")
+	if err != nil || retried.State != StateAcquired {
+		t.Fatalf("retried=%+v error=%v", retried, err)
+	}
+}

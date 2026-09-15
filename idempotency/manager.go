@@ -12,7 +12,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var ErrOwnershipExpired = errors.New("idempotency ownership expired")
+var (
+	ErrOwnershipExpired = errors.New("idempotency ownership expired")
+	ErrResponseTooLarge = errors.New("idempotency response is too large")
+)
+
+const defaultMaxResponseBytes = 1 << 20
 
 type State string
 
@@ -25,11 +30,12 @@ const (
 )
 
 type Config struct {
-	Enabled       bool
-	Service       string
-	ProcessingTTL time.Duration
-	ResultTTL     time.Duration
-	FailureTTL    time.Duration
+	Enabled          bool
+	Service          string
+	ProcessingTTL    time.Duration
+	ResultTTL        time.Duration
+	FailureTTL       time.Duration
+	MaxResponseBytes int
 }
 
 type Failure struct {
@@ -52,6 +58,9 @@ type Manager struct {
 }
 
 func New(client *redis.Client, cfg Config) *Manager {
+	if cfg.MaxResponseBytes <= 0 {
+		cfg.MaxResponseBytes = defaultMaxResponseBytes
+	}
 	return &Manager{client: client, cfg: cfg}
 }
 
@@ -181,9 +190,35 @@ func (m *Manager) Complete(ctx context.Context, key, owner string, response any)
 	if err != nil {
 		return fmt.Errorf("encode idempotency response: %w", err)
 	}
+	if len(encoded) > m.cfg.MaxResponseBytes {
+		abortErr := m.Abort(ctx, key, owner)
+		return errors.Join(ErrResponseTooLarge, abortErr)
+	}
 	changed, err := finishScript.Run(ctx, m.client, []string{m.storageKey(key)}, owner, string(StateCompleted), "response", encoded, m.cfg.ResultTTL.Milliseconds()).Int()
 	if err != nil {
 		return fmt.Errorf("complete idempotency request: %w", err)
+	}
+	if changed != 1 {
+		return ErrOwnershipExpired
+	}
+	return nil
+}
+
+var abortScript = redis.NewScript(`
+if redis.call('HGET', KEYS[1], 'state') ~= 'processing' or redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+return 1
+`)
+
+// Abort releases a processing record after a retryable failure. It never
+// deletes a completed record or work owned by another request.
+func (m *Manager) Abort(ctx context.Context, key, owner string) error {
+	if !m.Enabled() || m.client == nil || key == "" || owner == "" {
+		return errors.New("idempotency is unavailable")
+	}
+	changed, err := abortScript.Run(ctx, m.client, []string{m.storageKey(key)}, owner).Int()
+	if err != nil {
+		return fmt.Errorf("abort idempotency request: %w", err)
 	}
 	if changed != 1 {
 		return ErrOwnershipExpired

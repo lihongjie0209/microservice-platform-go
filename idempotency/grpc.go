@@ -26,6 +26,7 @@ type ManagerAPI interface {
 	Begin(context.Context, string, string) (Decision, error)
 	Complete(context.Context, string, string, any) error
 	Fail(context.Context, string, string, Failure) error
+	Abort(context.Context, string, string) error
 }
 
 type leaseManager interface {
@@ -86,7 +87,11 @@ func UnaryServerInterceptor(manager ManagerAPI, methods []string, logger *slog.L
 		defer cancel()
 		if handlerErr != nil {
 			failureStatus := status.Convert(handlerErr)
-			err = manager.Fail(persistCtx, key, decision.Owner, Failure{Message: failureStatus.Message(), GRPCCode: int(failureStatus.Code())})
+			if retryableGRPCCode(failureStatus.Code()) {
+				err = manager.Abort(persistCtx, key, decision.Owner)
+			} else {
+				err = manager.Fail(persistCtx, key, decision.Owner, Failure{Message: failureStatus.Message(), GRPCCode: int(failureStatus.Code())})
+			}
 		} else {
 			message, messageOK := response.(proto.Message)
 			if !messageOK {
@@ -102,6 +107,16 @@ func UnaryServerInterceptor(manager ManagerAPI, methods []string, logger *slog.L
 			logger.ErrorContext(ctx, "persist grpc idempotency result", "error", err, "method", info.FullMethod)
 		}
 		return response, handlerErr
+	}
+}
+
+func retryableGRPCCode(code codes.Code) bool {
+	switch code {
+	case codes.Canceled, codes.Unknown, codes.DeadlineExceeded, codes.ResourceExhausted,
+		codes.Aborted, codes.Internal, codes.Unavailable, codes.DataLoss:
+		return true
+	default:
+		return false
 	}
 }
 
