@@ -146,10 +146,11 @@ func (s *RedisStore) qualifiedKey(key string) (string, error) {
 	if s == nil || s.client == nil {
 		return "", ErrUnavailable
 	}
-	if key == "" || key != strings.TrimSpace(key) || len(key) > 1024 || strings.IndexFunc(key, unicode.IsControl) >= 0 {
+	qualified := s.prefix + key
+	if key == "" || key != strings.TrimSpace(key) || s.prefix != strings.TrimSpace(s.prefix) || len(key) > 1024 || len(qualified) > 2048 || strings.IndexFunc(key, unicode.IsControl) >= 0 || strings.IndexFunc(s.prefix, unicode.IsControl) >= 0 {
 		return "", ErrInvalidKey
 	}
-	return s.prefix + key, nil
+	return qualified, nil
 }
 
 func GetJSON[T any](ctx context.Context, store Store, key string) (T, error) {

@@ -50,6 +50,10 @@ func TestRedisStoreValidationAndMiss(t *testing.T) {
 	if err := store.Set(t.Context(), "key", []byte("large"), time.Second); !errors.Is(err, ErrValueTooLarge) {
 		t.Fatalf("size err=%v", err)
 	}
+	invalidPrefix := NewRedisStore(client, WithKeyPrefix("bad\n"))
+	if err := invalidPrefix.Set(t.Context(), "key", nil, time.Second); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("prefix err=%v", err)
+	}
 }
 
 func TestJSONHelpers(t *testing.T) {

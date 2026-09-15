@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-redsync/redsync/v4"
 	redsyncgoredis "github.com/go-redsync/redsync/v4/redis/goredis/v9"
@@ -51,7 +52,7 @@ func NewRedisLocker(client redis.UniversalClient) *RedisLocker {
 // NewRedisLockerWithPrefix creates a locker with an application-specific key
 // namespace. The prefix must be non-empty to prevent collisions with data keys.
 func NewRedisLockerWithPrefix(client redis.UniversalClient, prefix string) *RedisLocker {
-	if strings.TrimSpace(prefix) == "" {
+	if strings.TrimSpace(prefix) == "" || prefix != strings.TrimSpace(prefix) || strings.IndexFunc(prefix, unicode.IsControl) >= 0 {
 		prefix = defaultPrefix
 	}
 	return &RedisLocker{
@@ -92,7 +93,7 @@ func (l *RedisLocker) Lock(ctx context.Context, key string, ttl, retryDelay time
 }
 
 func (l *RedisLocker) newMutex(key string, ttl time.Duration, options ...redsync.Option) (*redsync.Mutex, error) {
-	if strings.TrimSpace(key) == "" {
+	if strings.TrimSpace(key) == "" || key != strings.TrimSpace(key) || len(key) > 1024 || strings.IndexFunc(key, unicode.IsControl) >= 0 {
 		return nil, fmt.Errorf("%w: key must not be empty", ErrInvalid)
 	}
 	if ttl <= 0 {
@@ -131,6 +132,9 @@ func (l *redisMutex) Unlock(ctx context.Context) error {
 func WithLock(ctx context.Context, locker Locker, key string, ttl, retryDelay time.Duration, fn func(context.Context) error) error {
 	if locker == nil || fn == nil {
 		return fmt.Errorf("%w: locker and callback are required", ErrInvalid)
+	}
+	if ttl < 3*time.Millisecond {
+		return fmt.Errorf("%w: auto-renewed lock ttl must be at least 3ms", ErrInvalid)
 	}
 	mutex, err := locker.Lock(ctx, key, ttl, retryDelay)
 	if err != nil {

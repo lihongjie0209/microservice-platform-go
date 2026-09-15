@@ -47,6 +47,11 @@ func TestWithLockValidatesDependencies(t *testing.T) {
 	if !errors.Is(err, distlock.ErrInvalid) {
 		t.Fatalf("WithLock error=%v", err)
 	}
+	locker := newLocker(t)
+	err = distlock.WithLock(t.Context(), locker, "job", time.Nanosecond, time.Millisecond, func(context.Context) error { return nil })
+	if !errors.Is(err, distlock.ErrInvalid) {
+		t.Fatalf("short ttl error=%v", err)
+	}
 }
 
 func TestRedisLocker_ContentionOwnershipAndReuse(t *testing.T) {
