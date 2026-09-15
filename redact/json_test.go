@@ -24,3 +24,25 @@ func TestJSONRejectsInvalidPayload(t *testing.T) {
 		t.Fatal("JSON() accepted invalid JSON")
 	}
 }
+
+func TestSensitiveKeyAndRecursiveDetection(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"client_secret", "password_confirmation", "api-key", "private.key", "Authorization"} {
+		if !SensitiveKey(key) {
+			t.Fatalf("SensitiveKey(%q) = false", key)
+		}
+	}
+	for _, key := range []string{"monkey", "tokenized_at", "accessibility_key"} {
+		if SensitiveKey(key) {
+			t.Fatalf("SensitiveKey(%q) = true", key)
+		}
+	}
+	found, err := ContainsSensitiveJSON([]byte(`{"items":[{"profile":{"client_secret":"value"}}]}`))
+	if err != nil || !found {
+		t.Fatalf("ContainsSensitiveJSON() = %v, %v", found, err)
+	}
+	found, err = ContainsSensitiveJSON([]byte(`{"device":"mobile"}`))
+	if err != nil || found {
+		t.Fatalf("ContainsSensitiveJSON() = %v, %v", found, err)
+	}
+}
