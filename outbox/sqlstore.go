@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -16,16 +17,42 @@ import (
 var validTable = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
 type SQLStore struct {
-	db    *sqlx.DB
-	table string
-	now   func() time.Time
+	db          *sqlx.DB
+	table       string
+	now         func() time.Time
+	workerActor string
 }
 
-func NewSQLStore(db *sqlx.DB, table string) (*SQLStore, error) {
+type SQLStoreOption func(*SQLStore) error
+
+// WithWorkerAuditActor configures the service identity used by dispatcher
+// updates. It also injects the identity into database session context so
+// database-owned audit triggers can maintain actor fields.
+func WithWorkerAuditActor(actor string) SQLStoreOption {
+	return func(store *SQLStore) error {
+		actor = strings.TrimSpace(actor)
+		if actor == "" || len(actor) > 255 {
+			return errors.New("outbox worker audit actor must be between 1 and 255 bytes")
+		}
+		store.workerActor = actor
+		return nil
+	}
+}
+
+func NewSQLStore(db *sqlx.DB, table string, options ...SQLStoreOption) (*SQLStore, error) {
 	if db == nil || !validTable.MatchString(table) {
 		return nil, errors.New("database and a safe outbox table name are required")
 	}
-	return &SQLStore{db: db, table: table, now: time.Now}, nil
+	store := &SQLStore{db: db, table: table, now: time.Now}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("outbox SQL store option must not be nil")
+		}
+		if err := option(store); err != nil {
+			return nil, err
+		}
+	}
+	return store, nil
 }
 
 // AddTx persists an event inside the caller's business transaction. The event
@@ -55,6 +82,9 @@ func (s *SQLStore) Claim(ctx context.Context, limit int, lease time.Duration) ([
 		return nil, fmt.Errorf("begin %s claim: %w", s.table, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.setWorkerAuditActor(ctx, tx); err != nil {
+		return nil, err
+	}
 	now := s.now()
 	var rows []struct {
 		ID       string `db:"id"`
@@ -85,7 +115,7 @@ func (s *SQLStore) Claim(ctx context.Context, limit int, lease time.Duration) ([
 
 func (s *SQLStore) MarkPublished(ctx context.Context, event Event, at time.Time) error {
 	query := s.db.Rebind(`UPDATE ` + s.table + ` SET published_at=?,version=version+1,updated_at=?,updated_by='outbox-dispatcher',last_error='' WHERE id=? AND published_at IS NULL`)
-	result, err := s.db.ExecContext(ctx, query, at, at, event.ID)
+	result, err := s.execWorkerUpdate(ctx, query, at, at, event.ID)
 	return affected(result, err, s.table, event.ID)
 }
 
@@ -94,8 +124,49 @@ func (s *SQLStore) MarkFailed(ctx context.Context, event Event, message string, 
 		message = message[:4096]
 	}
 	query := s.db.Rebind(`UPDATE ` + s.table + ` SET available_at=?,last_error=?,version=version+1,updated_at=?,updated_by='outbox-dispatcher' WHERE id=? AND published_at IS NULL`)
-	result, err := s.db.ExecContext(ctx, query, retryAt, message, s.now(), event.ID)
+	result, err := s.execWorkerUpdate(ctx, query, retryAt, message, s.now(), event.ID)
 	return affected(result, err, s.table, event.ID)
+}
+
+func (s *SQLStore) execWorkerUpdate(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if s.workerActor == "" {
+		return s.db.ExecContext(ctx, query, args...)
+	}
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin %s worker update: %w", s.table, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.setWorkerAuditActor(ctx, tx); err != nil {
+		return nil, err
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit %s worker update: %w", s.table, err)
+	}
+	return result, nil
+}
+
+func (s *SQLStore) setWorkerAuditActor(ctx context.Context, tx *sqlx.Tx) error {
+	if s.workerActor == "" {
+		return nil
+	}
+	var query string
+	switch s.db.DriverName() {
+	case "mysql":
+		query = "SET @app_actor_id = ?"
+	case "pgx", "postgres", "kingbase":
+		query = "SELECT set_config('app.actor_id', ?, true)"
+	default:
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(query), s.workerActor); err != nil {
+		return fmt.Errorf("set %s worker audit actor: %w", s.table, err)
+	}
+	return nil
 }
 
 // DeletePublishedBefore removes only terminal, successfully published events in

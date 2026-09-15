@@ -22,6 +22,73 @@ func TestNewSQLStoreRejectsInjectedTableName(t *testing.T) {
 	}
 }
 
+func TestNewSQLStoreValidatesWorkerAuditActor(t *testing.T) {
+	t.Parallel()
+	database, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := NewSQLStore(sqlx.NewDb(database, "sqlmock"), "events", WithWorkerAuditActor("  ")); err == nil {
+		t.Fatal("blank worker actor accepted")
+	}
+}
+
+func TestSQLStoreMarkPublishedInjectsMySQLWorkerActor(t *testing.T) {
+	t.Parallel()
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	db := sqlx.NewDb(database, "mysql")
+	store, err := NewSQLStore(db, "application_outbox_events", WithWorkerAuditActor("application-service:outbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SET @app_actor_id = ?")).WithArgs("application-service:outbox").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE application_outbox_events SET published_at=?,version=version+1,updated_at=?,updated_by='outbox-dispatcher',last_error='' WHERE id=? AND published_at IS NULL")).WithArgs(at, at, "event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := store.MarkPublished(t.Context(), Event{ID: "event-1"}, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLStoreInjectsPostgresWorkerActor(t *testing.T) {
+	t.Parallel()
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	db := sqlx.NewDb(database, "pgx")
+	store, err := NewSQLStore(db, "application_outbox_events", WithWorkerAuditActor("application-service:outbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectBegin()
+	tx, err := db.BeginTxx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.actor_id', $1, true)")).WithArgs("application-service:outbox").WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := store.setWorkerAuditActor(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLStoreAddTxPersistsEnvelopeInCallerTransaction(t *testing.T) {
 	t.Parallel()
 	database, mock, err := sqlmock.New()
