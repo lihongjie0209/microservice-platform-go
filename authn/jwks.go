@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,6 +21,13 @@ type JWKSConfig struct {
 	// Zero selects the two-second default.
 	HTTPTimeout time.Duration
 }
+
+// ErrJWKSUnavailable means key verification was blocked by a failed remote
+// refresh, not that a healthy key set rejected the token.
+var ErrJWKSUnavailable = errors.New("JWKS unavailable")
+
+type refreshFailureKey struct{}
+type refreshFailure struct{ failed bool }
 
 type identityClaims struct {
 	SubjectType       string `json:"subject_type,omitempty"`
@@ -56,6 +64,15 @@ func NewJWKSVerifier(ctx context.Context, config JWKSConfig) (*JWKSVerifier, err
 	keys, err := keyfunc.NewDefaultOverrideCtx(runCtx, []string{config.URL}, keyfunc.Override{
 		HTTPTimeout:               config.HTTPTimeout,
 		NoErrorReturnFirstHTTPReq: &returnFirstHTTPError,
+		RefreshErrorHandlerFunc: func(string) func(context.Context, error) {
+			return func(refreshCtx context.Context, _ error) {
+				if failure, ok := refreshCtx.Value(refreshFailureKey{}).(*refreshFailure); ok {
+					failure.failed = true
+					return
+				}
+				slog.Default().WarnContext(refreshCtx, "background JWKS refresh failed")
+			}
+		},
 	})
 	if err != nil {
 		cancel()
@@ -65,8 +82,13 @@ func NewJWKSVerifier(ctx context.Context, config JWKSConfig) (*JWKSVerifier, err
 }
 func (v *JWKSVerifier) VerifyBearer(ctx context.Context, raw string) (principal.Principal, error) {
 	claims := new(identityClaims)
-	token, err := jwt.ParseWithClaims(raw, claims, v.keyfunc.KeyfuncCtx(ctx), jwt.WithIssuer(v.issuer), jwt.WithAudience(v.audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithValidMethods([]string{"EdDSA", "RS256", "ES256"}))
+	failure := new(refreshFailure)
+	keyCtx := context.WithValue(ctx, refreshFailureKey{}, failure)
+	token, err := jwt.ParseWithClaims(raw, claims, v.keyfunc.KeyfuncCtx(keyCtx), jwt.WithIssuer(v.issuer), jwt.WithAudience(v.audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithValidMethods([]string{"EdDSA", "RS256", "ES256"}))
 	if err != nil {
+		if failure.failed {
+			return principal.Principal{}, fmt.Errorf("verify access token: %w", ErrJWKSUnavailable)
+		}
 		return principal.Principal{}, fmt.Errorf("verify access token: %w", err)
 	}
 	if !token.Valid || strings.TrimSpace(claims.Subject) == "" {

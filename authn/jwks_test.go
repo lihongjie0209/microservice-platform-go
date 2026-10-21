@@ -8,9 +8,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,6 +182,58 @@ func TestJWKSVerifierRejectsConflictingOrIncompletePrincipalClaims(t *testing.T)
 			}
 			if actor, err := verifier.VerifyBearer(t.Context(), raw); err == nil {
 				t.Fatalf("VerifyBearer() accepted malformed claims as %+v", actor)
+			}
+		})
+	}
+}
+
+func TestJWKSVerifierDistinguishesUnknownKeyFromRefreshOutage(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		outage      bool
+		unavailable bool
+	}{
+		{name: "unknown key with healthy JWKS"},
+		{name: "unknown key during JWKS outage", outage: true, unavailable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cachedPublic, _, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, rotatedPrivate, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var unavailable atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if unavailable.Load() {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"keys":[{"kty":"OKP","use":"sig","kid":"key-1","crv":"Ed25519","alg":"EdDSA","x":"%s"}]}`, base64.RawURLEncoding.EncodeToString(cachedPublic))
+			}))
+			defer server.Close()
+			verifier, err := NewJWKSVerifier(t.Context(), JWKSConfig{URL: server.URL, Issuer: "identity-service", Audience: "consumer"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer verifier.Close()
+			unavailable.Store(test.outage)
+			now := time.Now()
+			claims := identityClaims{SubjectType: "user", SessionID: "session-1", RegisteredClaims: jwt.RegisteredClaims{
+				Issuer: "identity-service", Subject: "user-1", Audience: []string{"consumer"},
+				IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			}}
+			token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+			token.Header["kid"] = "key-2"
+			raw, err := token.SignedString(rotatedPrivate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = verifier.VerifyBearer(t.Context(), raw)
+			if err == nil || errors.Is(err, ErrJWKSUnavailable) != test.unavailable {
+				t.Fatalf("VerifyBearer() error=%v, want unavailable=%v", err, test.unavailable)
 			}
 		})
 	}
